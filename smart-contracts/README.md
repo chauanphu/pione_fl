@@ -55,3 +55,70 @@ After setting the variable, you can run the deployment with the Sepolia network:
 ```shell
 npx hardhat ignition deploy --network sepolia ignition/modules/Counter.ts
 ```
+
+# FederatedLearning Smart Contract
+Overview
+
+This Solidity smart contract (FederatedLearning.sol) serves as the on-chain backbone for a decentralized federated learning system. It coordinates the actions of clients and an aggregator without ever handling the raw data or large model files directly.
+
+The core principle is to use the Ethereum blockchain as a trust and coordination layer, while leveraging the InterPlanetary File System (IPFS) for efficient, decentralized storage of machine learning models.
+Key Components
+Roles
+
+    Owner: The address that deploys the contract. The owner has administrative privileges, such as authorizing and revoking clients.
+
+    Aggregator: The entity responsible for orchestrating the training rounds. It initiates new rounds and finalizes them by submitting the aggregated global model. By default, the owner is also the aggregator, but this could be extended to be a separate role.
+
+    Clients: Authorized addresses that can participate in training. These represent the edge devices (e.g., Android phones) that train models on local data.
+
+State Variables
+
+    currentRound: A counter for the current training round.
+
+    globalModelCID: The IPFS Content Identifier (CID) for the current global model. This is the "single source of truth" that clients pull from at the start of each round.
+
+    submissions: An array that stores the ModelUpdate structs submitted by clients in the current round. Each struct contains the client's address and the IPFS CID of their local model update.
+
+    authorizedClients: A mapping to keep track of which addresses are permitted to submit model updates.
+
+Core Functions
+
+    authorizeClient(address): Allows the owner to whitelist a new client.
+
+    startNewRound(string memory _initialModelCID): Called by the aggregator to begin a new training cycle. It increments the round counter and sets the global model CID for clients to download.
+
+    submitModelUpdate(string memory _localModelCID): Called by an authorized client to submit the IPFS CID of their trained local model.
+
+    completeAggregation(string memory _newGlobalModelCID): Called by the aggregator after it has downloaded all the local models from IPFS, computed the new global model off-chain, and uploaded it back to IPFS. This function updates the globalModelCID on the contract, completing the round.
+
+    getSubmissions(): A view function that allows the aggregator to easily retrieve all the submitted CIDs for the current round.
+
+Workflow
+
+    Setup: The owner deploys the contract and authorizes a set of clients.
+
+    Round Initiation: The aggregator starts a new round by calling startNewRound with the CID of the initial global model.
+
+    Client Training:
+
+        Clients read the globalModelCID from the contract.
+
+        They download the model from IPFS using the CID.
+
+        They train the model on their local data.
+
+        They upload their updated model to IPFS, receiving a new CID.
+
+    Submission: Each client calls submitModelUpdate with their new CID.
+
+    Aggregation:
+
+        The aggregator calls getSubmissions to get all the local model CIDs.
+
+        It downloads all the local models from IPFS.
+
+        It performs the aggregation computation (e.g., averaging weights) off-chain.
+
+        It uploads the resulting new global model to IPFS.
+
+    Round Completion: The aggregator calls completeAggregation with the new global model's CID, finalizing the round and making the new model available for the next one.
