@@ -1,36 +1,38 @@
-// scripts/deploy.ts
-
 import { network } from "hardhat";
 
 const { ethers } = await network.connect({
-  network: "hardhatOp",
-  chainType: "op",
+  network: "localhost",
+  chainType: "l1",
 });
 
-async function main(): Promise<void> {
-  console.log("Preparing to deploy FederatedLearningWithValidation contract...");
-
-  // The address of the contract owner/aggregator will be the first account from Hardhat's accounts list.
+async function main() {
   const [deployer] = await ethers.getSigners();
-  console.log("Deploying contract with the account:", deployer.address);
-  // We need to set a validation threshold upon deployment.
-  // Let's say we require 2 validator approvals for a model to be accepted.
-  const validationThreshold: number = 2;
-  console.log(`Setting validation threshold to: ${validationThreshold}`);
+  console.log(`Deploying contract with the account: ${deployer.address}`);
 
-  const FederatedLearning = await ethers.getContractFactory("FederatedLearningWithValidation");
-  const federatedLearning = await FederatedLearning.deploy(validationThreshold);
+  const contractFactory = await ethers.getContractFactory("FederatedLearning");
+  const contract = await contractFactory.deploy(deployer.address);
+  await contract.waitForDeployment();
+  const contractAddress = await contract.getAddress();
 
-  await federatedLearning.waitForDeployment();
+  console.log(`✅ FederatedLearning contract deployed to: ${contractAddress}`);
 
-  console.log("\n----------------------------------------------------");
-  console.log(`✅ Contract deployed successfully!`);
-  console.log(`📜 Contract Address: ${await federatedLearning.getAddress()}`);
-  console.log("----------------------------------------------------\n");
-  console.log("You can now use this address in the simulation script (scripts/run-simulation.js)");
+  // --- Automatically update .env file ---
+  // const envPath = path.resolve(__dirname, "../.env");
+  // if (fs.existsSync(envPath)) {
+  //   let envContent = fs.readFileSync(envPath, "utf-8");
+  //   if (envContent.includes("CONTRACT_ADDRESS")) {
+  //     envContent = envContent.replace(/CONTRACT_ADDRESS=.*/, `CONTRACT_ADDRESS="${contractAddress}"`);
+  //   } else {
+  //     envContent += `\nCONTRACT_ADDRESS="${contractAddress}"`;
+  //   }
+  //   fs.writeFileSync(envPath, envContent);
+  //   console.log(`✅ Updated CONTRACT_ADDRESS in .env file`);
+  // } else {
+  //   console.log("📝 .env file not found, please add CONTRACT_ADDRESS manually.");
+  // }
 }
 
-main().catch((error: Error) => {
+main().catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });

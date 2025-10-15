@@ -1,0 +1,27 @@
+version: "3.8"
+
+services:
+  ipfs_node:
+    image: ipfs/kubo:v0.28.0 # Using a specific version is recommended for stability
+    container_name: ipfs_node
+    restart: unless-stopped
+    ports:
+      # Exposes the RPC API on the host machine's port 5001
+      - "5001:5001"
+      # Exposes the HTTP Gateway on the host machine's port 8080
+      - "8080:8080"
+      # Exposes the Swarm port for peer-to-peer communication (TCP & UDP)
+      - "4001:4001"
+      - "4001:4001/udp"
+    volumes:
+      # Mounts a named volume to persist the IPFS repository data
+      # - ipfs_data:/data/ipfs
+      # Optional: A staging volume to easily add files from your host machine
+      - ./staging:/export
+    environment:
+      # Applies a 'server' profile, optimizing the node for a stable environment
+      - IPFS_PROFILE=server
+
+# volumes:
+#   ipfs_data:
+#     # This named volume will persist your IPFS data across container restarts
