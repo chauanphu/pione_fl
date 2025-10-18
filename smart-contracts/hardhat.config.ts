@@ -3,6 +3,9 @@ import type { HardhatUserConfig } from "hardhat/config";
 import hardhatToolboxMochaEthersPlugin from "@nomicfoundation/hardhat-toolbox-mocha-ethers";
 import { configVariable } from "hardhat/config";
 
+// const TESTNET_RPC_URL = "https://rpc-url-from-infura-or-alchemy.com";
+// const PRIVATE_KEY = "your-wallet-private-key";
+
 const config: HardhatUserConfig = {
   plugins: [hardhatToolboxMochaEthersPlugin],
   solidity: {
@@ -22,6 +25,12 @@ const config: HardhatUserConfig = {
     },
   },
   networks: {
+    pioneChain: {
+      type: "http",
+      chainType: "l1",
+      url: configVariable("TESTNET_RPC_URL"),
+      accounts: [configVariable("PRIVATE_KEY")],
+    },
     hardhatMainnet: {
       type: "edr-simulated",
       chainType: "l1",
