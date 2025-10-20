@@ -2,6 +2,7 @@ import type { HardhatUserConfig } from "hardhat/config";
 
 import hardhatToolboxMochaEthersPlugin from "@nomicfoundation/hardhat-toolbox-mocha-ethers";
 import { configVariable } from "hardhat/config";
+import "@nomicfoundation/hardhat-ignition-ethers"; // Add this line
 
 // const TESTNET_RPC_URL = "https://rpc-url-from-infura-or-alchemy.com";
 // const PRIVATE_KEY = "your-wallet-private-key";
