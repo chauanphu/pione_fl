@@ -25,6 +25,7 @@ import { UploadFile } from '@mui/icons-material';
 
 // --- Constants and Type Definitions ---
 const API_URL = 'http://localhost:3001/api';
+const WS_URL = 'ws://localhost:3001';
 
 interface SystemStatus {
     round: string;
@@ -34,6 +35,8 @@ interface SystemStatus {
 
 interface HistoryItem {
     round: string;
+    block_hash: string;
+    transaction_hash: string;
     cid: string;
 }
 
@@ -55,37 +58,42 @@ const App: React.FC = () => {
     const [isLoading, setIsLoading] = useState<boolean>(true);
     const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
     const [isUploading, setIsUploading] = useState<boolean>(false);
+    const [isCancelling, setIsCancelling] = useState<boolean>(false);
     const [error, setError] = useState<string>('');
     const [success, setSuccess] = useState<string>('');
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
-    // --- REMOVED: `initialCid` state is no longer needed ---
-
-    // --- Data Fetching ---
-    const fetchData = useCallback(async () => {
-        setIsLoading(true);
-        setError('');
-        try {
-            const statusRes = await axios.get<SystemStatus>(`${API_URL}/status`);
-            setStatus(statusRes.data);
-
-            const historyRes = await axios.get<HistoryItem[]>(`${API_URL}/global-models-history`);
-            setHistory(historyRes.data);
-
-        } catch (err) {
-            const message = (axios.isAxiosError<ApiError>(err) && err.response?.data?.error)
-                ? err.response.data.error
-                : "Cannot connect to the backend server.";
-            setError(message);
-        } finally {
-            setIsLoading(false);
-        }
-    }, []);
 
     useEffect(() => {
-        fetchData();
-        const interval = setInterval(fetchData, 10000); // Poll every 10 seconds
-        return () => clearInterval(interval);
-    }, [fetchData]);
+        const ws = new WebSocket(WS_URL);
+
+        ws.onopen = () => {
+            console.log('WebSocket connection established.');
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const { status: newStatus, history: newHistory } = JSON.parse(event.data);
+                if (newStatus && newHistory) {
+                    setStatus(newStatus);
+                    setHistory(newHistory);
+                }
+                if (isLoading) setIsLoading(false);
+            } catch (err) {
+                console.error('Failed to parse WebSocket message:', err);
+                setError('Received invalid data from the server.');
+            }
+        };
+
+        ws.onerror = () => {
+            setError('WebSocket connection error. Is the backend server running?');
+            setIsLoading(false);
+        };
+
+        // Cleanup function
+        return () => {
+            ws.close();
+        };
+    }, [isLoading]); // Dependency array to manage connection lifecycle
 
     // --- Event Handlers ---
     const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -112,13 +120,12 @@ const App: React.FC = () => {
 
         try {
             // --- MODIFIED: Endpoint changed to `/set-initial-model` ---
-            const response = await axios.post<ActionResponse>(`${API_URL}/set-initial-model`, formData, {
+            const response = await axios.post<ActionResponse>(`${API_URL}/upload`, formData, {
                 headers: { 'Content-Type': 'multipart/form-data' },
             });
             if (response.data.success && response.data.initialModelCID) {
                 setSuccess(`Initial model set successfully! CID: ${response.data.initialModelCID}`);
                 setSelectedFile(null); // Clear the file input
-                setTimeout(fetchData, 4000); // Refresh data to show new CID and status
             }
         } catch (err) {
             const message = (axios.isAxiosError<ApiError>(err) && err.response?.data?.error)
@@ -137,9 +144,8 @@ const App: React.FC = () => {
         setSuccess('');
         try {
             // --- MODIFIED: Endpoint changed to `/start-round` and body removed ---
-            const response = await axios.post<ActionResponse>(`${API_URL}/start-round`);
+            const response = await axios.post<ActionResponse>(`${API_URL}/train`);
             setSuccess(`New round started successfully! TxHash: ${response.data.txHash}`);
-            setTimeout(fetchData, 4000); // Refresh data
         } catch (err) {
             const message = (axios.isAxiosError<ApiError>(err) && err.response?.data?.error)
                 ? err.response.data.error
@@ -147,6 +153,23 @@ const App: React.FC = () => {
             setError(message);
         } finally {
             setIsSubmitting(false);
+        }
+    };
+
+    const handleCancelRound = async () => {
+        setIsCancelling(true);
+        setError('');
+        setSuccess('');
+        try {
+            const response = await axios.post<ActionResponse>(`${API_URL}/cancel`);
+            setSuccess(`Round successfully cancelled! TxHash: ${response.data.txHash}`);
+        } catch (err) {
+            const message = (axios.isAxiosError<ApiError>(err) && err.response?.data?.error)
+                ? err.response.data.error
+                : "An unknown error occurred while cancelling the round.";
+            setError(message);
+        } finally {
+            setIsCancelling(false);
         }
     };
 
@@ -194,37 +217,6 @@ const App: React.FC = () => {
                         </Card>
                     </Grid>
 
-                    {/* --- MODIFIED: History Card now displays a Table --- */}
-                    <Grid size={{ xs: 12, md: 6 }}>
-                        <Card sx={{ height: '100%' }}>
-                            <CardContent>
-                                <Typography variant="h5" component="h2" gutterBottom>Global Models History</Typography>
-                                {isLoading ? <CircularProgress /> : history.length > 0 ? (
-                                    <TableContainer component={Paper} sx={{ maxHeight: 220 }}>
-                                        <Table stickyHeader size="small">
-                                            <TableHead>
-                                                <TableRow>
-                                                    <TableCell sx={{ fontWeight: 'bold' }}>Round</TableCell>
-                                                    <TableCell sx={{ fontWeight: 'bold' }}>Final Global Model CID</TableCell>
-                                                </TableRow>
-                                            </TableHead>
-                                            <TableBody>
-                                                {history.slice().reverse().map((item) => (
-                                                    <TableRow hover key={item.round}>
-                                                        <TableCell>{item.round}</TableCell>
-                                                        <TableCell sx={{ wordBreak: 'break-all' }}>{item.cid}</TableCell>
-                                                    </TableRow>
-                                                ))}
-                                            </TableBody>
-                                        </Table>
-                                    </TableContainer>
-                                ) : (
-                                    <Typography variant="body2" color="text.secondary">No completed rounds yet.</Typography>
-                                )}
-                            </CardContent>
-                        </Card>
-                    </Grid>
-
                     {/* --- MODIFIED: Actions Card is simplified --- */}
                     <Grid size={{ xs: 12, md: 6 }}>
                         <Card>
@@ -241,10 +233,53 @@ const App: React.FC = () => {
                                         disabled={isSubmitting || !status.cid || status.state !== 'INACTIVE'}>
                                         {isSubmitting ? <CircularProgress size={24} /> : `Start Round ${parseInt(status.round, 10) + 1}`}
                                     </Button>
+                                    <Button
+                                        variant="outlined"
+                                        color="warning"
+                                        onClick={handleCancelRound}
+                                        // Disabled if no round is active
+                                        disabled={isCancelling || status.state === 'INACTIVE'}>
+                                        {isCancelling ? <CircularProgress size={24} /> : 'Cancel Current Round'}
+                                    </Button>
                                 </Box>
                                 <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 1 }}>
                                     The "Start Round" button is only enabled when a global model exists and the system is INACTIVE.
                                 </Typography>
+                            </CardContent>
+                        </Card>
+                    </Grid>
+
+                                        {/* --- MODIFIED: History Card now displays a Table --- */}
+                    <Grid size={{ xs: 12 }}>
+                        <Card sx={{ height: '100%' }}>
+                            <CardContent>
+                                <Typography variant="h5" component="h2" gutterBottom>Global Models History</Typography>
+                                {isLoading ? <CircularProgress /> : history.length > 0 ? (
+                                    <TableContainer component={Paper} sx={{ maxHeight: 220 }}>
+                                        <Table stickyHeader size="small">
+                                            <TableHead>
+                                                <TableRow>
+                                                    <TableCell sx={{ fontWeight: 'bold' }}>Block Hash</TableCell>
+                                                    <TableCell sx={{ fontWeight: 'bold' }}>Transction Hash</TableCell>
+                                                    <TableCell sx={{ fontWeight: 'bold' }}>Round</TableCell>
+                                                    <TableCell sx={{ fontWeight: 'bold' }}>Final Global Model CID</TableCell>
+                                                </TableRow>
+                                            </TableHead>
+                                            <TableBody>
+                                                {history.slice().reverse().map((item) => (
+                                                    <TableRow hover key={item.round}>
+                                                        <TableCell>{item.round}</TableCell>
+                                                        <TableCell>{item.round}</TableCell>
+                                                        <TableCell>{item.round}</TableCell>
+                                                        <TableCell sx={{ wordBreak: 'break-all' }}>{item.cid}</TableCell>
+                                                    </TableRow>
+                                                ))}
+                                            </TableBody>
+                                        </Table>
+                                    </TableContainer>
+                                ) : (
+                                    <Typography variant="body2" color="text.secondary">No completed rounds yet.</Typography>
+                                )}
                             </CardContent>
                         </Card>
                     </Grid>

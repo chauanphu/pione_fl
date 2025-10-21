@@ -47,9 +47,8 @@ contract FederatedLearning is Ownable {
     event ModelValidated(uint256 indexed roundId, address indexed validator, string modelCID, bool isValid);
     event RoundFinalized(uint256 indexed roundId, string newGlobalModelCID);
     event RoundStateChanged(uint256 indexed roundId, RoundState newState);
-    // --- NEW EVENT ---
     event GlobalModelUpdated(string newGlobalModelCID);
-
+    event RoundCancelled(uint256 indexed roundId);
     // --- Constructor ---
 
     constructor(address initialOwner) Ownable(initialOwner) {}
@@ -182,5 +181,19 @@ contract FederatedLearning is Ownable {
             currentRoundState = RoundState.AGGREGATION;
             emit RoundStateChanged(currentRound, RoundState.AGGREGATION);
         }
+    }
+
+    function cancelRound() external onlyOwner {
+        require(currentRoundState != RoundState.INACTIVE, "No active round to cancel");
+        uint256 roundToCancel = currentRound;
+
+        currentRoundState = RoundState.INACTIVE;
+        currentRound--; // Revert the round increment from startNewRound
+
+        // Clean up data for the cancelled round to prevent side-effects
+        delete modelsInRound[roundToCancel];
+
+        emit RoundCancelled(roundToCancel);
+        emit RoundStateChanged(roundToCancel, RoundState.INACTIVE);
     }
 }

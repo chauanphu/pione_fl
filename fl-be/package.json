@@ -24,7 +24,8 @@
     "express": "^5.1.0",
     "fs-extra": "^11.3.2",
     "kubo-rpc-client": "^6.0.2",
-    "multer": "^2.0.2"
+    "multer": "^2.0.2",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "nodemon": "^3.1.10"
