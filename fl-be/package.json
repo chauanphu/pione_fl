@@ -1,18 +1,31 @@
 {
   "name": "fl-be",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "server.js",
+  "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
+  "keywords": [
+    "federated-learning",
+    "blockchain",
+    "express",
+    "ethers",
+    "ipfs"
+  ],
   "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "axios": "^1.12.2",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "ethers": "^6.15.0",
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "fs-extra": "^11.3.2",
+    "kubo-rpc-client": "^6.0.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
   }
 }
