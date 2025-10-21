@@ -31,17 +31,15 @@ contract FederatedLearning is Ownable {
     RoundState public currentRoundState;
     string public globalModelCID;
 
-    uint256 public constant REQUIRED_VALIDATIONS = 2; // Min positive votes for a model
+    uint256 public constant REQUIRED_VALIDATIONS = 1; // Min positive votes for a model
 
     // Round -> Trainer Address -> Model CID
     mapping(uint256 => mapping(address => string)) private roundSubmissions;
-
     // Round -> Model CID -> Validator Address -> Voted (true)
     mapping(uint256 => mapping(string => mapping(address => bool))) private modelValidators;
-    
     // Round -> All submitted model CIDs for that round
     mapping(uint256 => ModelSubmission[]) private modelsInRound;
-
+    
     // --- Events ---
 
     event NewRoundStarted(uint256 indexed roundId, string initialModelCID);
@@ -49,6 +47,8 @@ contract FederatedLearning is Ownable {
     event ModelValidated(uint256 indexed roundId, address indexed validator, string modelCID, bool isValid);
     event RoundFinalized(uint256 indexed roundId, string newGlobalModelCID);
     event RoundStateChanged(uint256 indexed roundId, RoundState newState);
+    // --- NEW EVENT ---
+    event GlobalModelUpdated(string newGlobalModelCID);
 
     // --- Constructor ---
 
@@ -58,15 +58,17 @@ contract FederatedLearning is Ownable {
 
     /**
      * @dev Starts a new training round.
-     * Can only be called by the owner (acting as the initial coordinator).
-     * @param _initialModelCID The IPFS CID of the global model for this round.
+     * Can only be called by the owner.
+     * Uses the global model CID already stored in the contract.
      */
-    function startNewRound(string memory _initialModelCID) external onlyOwner {
+    // --- MODIFIED FUNCTION ---
+    function startNewRound() external onlyOwner {
         require(currentRoundState == RoundState.INACTIVE, "An existing round is active");
+        require(bytes(globalModelCID).length > 0, "Global model CID must be set first");
+
         currentRound++;
-        globalModelCID = _initialModelCID;
         currentRoundState = RoundState.SUBMISSION;
-        emit NewRoundStarted(currentRound, _initialModelCID);
+        emit NewRoundStarted(currentRound, globalModelCID); // Now uses the state variable
         emit RoundStateChanged(currentRound, RoundState.SUBMISSION);
     }
 
@@ -85,7 +87,6 @@ contract FederatedLearning is Ownable {
             trainer: msg.sender,
             positiveVotes: 0
         }));
-
         emit ModelSubmitted(currentRound, msg.sender, _modelCID);
     }
 
@@ -102,9 +103,7 @@ contract FederatedLearning is Ownable {
         modelValidators[currentRound][_modelCID][msg.sender] = true;
 
         if (_isValid) {
-            // Find the model and increment its vote count
             for (uint i = 0; i < modelsInRound[currentRound].length; i++) {
-                // Important: string comparison in Solidity
                 if (keccak256(abi.encodePacked(modelsInRound[currentRound][i].cid)) == keccak256(abi.encodePacked(_modelCID))) {
                     modelsInRound[currentRound][i].positiveVotes++;
                     break;
@@ -122,8 +121,10 @@ contract FederatedLearning is Ownable {
      */
     function finalizeRound(string memory _newGlobalModelCID) external onlyOwner {
         require(currentRoundState == RoundState.AGGREGATION, "Not in aggregation phase");
+        
         globalModelCID = _newGlobalModelCID;
         currentRoundState = RoundState.INACTIVE;
+
         emit RoundFinalized(currentRound, _newGlobalModelCID);
         emit RoundStateChanged(currentRound, RoundState.INACTIVE);
     }
@@ -156,11 +157,24 @@ contract FederatedLearning is Ownable {
     // --- State Management (Owner only) ---
     
     /**
+     * @dev Sets or overwrites the global model CID. Can only be called by the owner.
+     * @param _newGlobalModelCID The IPFS CID for the global model.
+     */
+    // --- NEW FUNCTION ---
+    function setGlobalModelCID(string memory _newGlobalModelCID) external onlyOwner {
+        require(bytes(_newGlobalModelCID).length > 0, "CID cannot be empty");
+        require(currentRoundState == RoundState.INACTIVE, "Cannot set model during an active round");
+        globalModelCID = _newGlobalModelCID;
+        emit GlobalModelUpdated(_newGlobalModelCID);
+    }
+
+    /**
      * @dev Manually moves the round to the next state.
-     * In a production system, this would be automated by timers (e.g., using Chainlink Automation).
+     * In a production system, this would be automated by timers.
      */
     function advanceRoundState() external onlyOwner {
         require(currentRoundState != RoundState.INACTIVE, "No active round");
+
         if (currentRoundState == RoundState.SUBMISSION) {
             currentRoundState = RoundState.VALIDATION;
             emit RoundStateChanged(currentRound, RoundState.VALIDATION);
