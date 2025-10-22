@@ -5,15 +5,15 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 
 /**
  * @title FederatedLearning
- * @dev A smart contract to coordinate rounds of a decentralized federated learning process.
- * It uses IPFS CIDs to reference models stored off-chain.
- * The process follows four main phases: Submission, Validation, Aggregation, and Completion.
+ * @dev A smart contract to coordinate a multi-round federated learning "campaign".
+ * It orchestrates a predefined number of rounds with a fixed set of participants.
+ * Models are referenced via IPFS CIDs stored off-chain.
  */
 contract FederatedLearning is Ownable {
     // --- Enums and Structs ---
 
-    enum RoundState {
-        INACTIVE,   // Round has not started or is complete
+    enum CampaignState {
+        INACTIVE, // No campaign is running
         SUBMISSION, // Accepting model submissions from trainers
         VALIDATION, // Accepting validation judgments from validators
         AGGREGATION // Waiting for the aggregator to finalize the round
@@ -25,175 +25,332 @@ contract FederatedLearning is Ownable {
         uint256 positiveVotes;
     }
 
+    // --- NEW: Training Campaign Struct ---
+    // This struct holds all the data for a single, complete training process.
+    struct Campaign {
+        uint256 id;
+        CampaignState state;
+        string globalModelCID;
+        uint8 currentRound;
+        uint8 totalRounds; // Max 255 rounds per campaign, saves gas
+        mapping(address => bool) participants; // Authorized training nodes
+        uint256 submissionDeadline; // Timestamp for when submission period ends
+        uint8 minSubmissions; // The required number of submissions (quorum)
+        uint8 submissionCounter; // How many nodes have submitted for the current round
+    }
+
     // --- State Variables ---
 
-    uint256 public currentRound;
-    RoundState public currentRoundState;
-    string public globalModelCID;
+    uint256 public campaignCounter;
+    uint256 public activeCampaignId;
 
-    uint256 public constant REQUIRED_VALIDATIONS = 1; // Min positive votes for a model
+    // Mapping from a campaign ID to its Campaign struct
+    mapping(uint256 => Campaign) public campaigns;
 
-    // Round -> Trainer Address -> Model CID
-    mapping(uint256 => mapping(address => string)) private roundSubmissions;
-    // Round -> Model CID -> Validator Address -> Voted (true)
-    mapping(uint256 => mapping(string => mapping(address => bool))) private modelValidators;
-    // Round -> All submitted model CIDs for that round
-    mapping(uint256 => ModelSubmission[]) private modelsInRound;
-    
+    // --- MODIFIED: Storage is now nested by Campaign ID and Round Number ---
+    // Campaign ID -> Round Number -> Trainer Address -> Model CID
+    mapping(uint256 => mapping(uint8 => mapping(address => string)))
+        private roundSubmissions;
+    // Campaign ID -> Round Number -> All submitted models
+    mapping(uint256 => mapping(uint8 => ModelSubmission[]))
+        private modelsInRound;
+    // Campaign ID -> Round Number -> Model CID -> Validator Address -> Voted
+    mapping(uint256 => mapping(uint8 => mapping(string => mapping(address => bool))))
+        private modelValidators;
+
+    uint256 public constant REQUIRED_VALIDATIONS = 0;
+
     // --- Events ---
 
-    event NewRoundStarted(uint256 indexed roundId, string initialModelCID);
-    event ModelSubmitted(uint256 indexed roundId, address indexed trainer, string modelCID);
-    event ModelValidated(uint256 indexed roundId, address indexed validator, string modelCID, bool isValid);
-    event RoundFinalized(uint256 indexed roundId, string newGlobalModelCID);
-    event RoundStateChanged(uint256 indexed roundId, RoundState newState);
-    event GlobalModelUpdated(string newGlobalModelCID);
-    event RoundCancelled(uint256 indexed roundId);
-    // --- Constructor ---
+    // --- MODIFIED: Events now reference a campaignId ---
+    event CampaignCreated(
+        uint256 indexed campaignId,
+        uint8 totalRounds,
+        string initialModelCID
+    );
+    event NewRoundStarted(
+        uint256 indexed campaignId,
+        uint8 indexed round,
+        string initialModelCID
+    );
+    event ModelSubmitted(
+        uint256 indexed campaignId,
+        uint8 indexed round,
+        address indexed trainer,
+        string modelCID
+    );
+    event ModelValidated(
+        uint256 indexed campaignId,
+        uint8 indexed round,
+        address indexed validator,
+        string modelCID,
+        bool isValid
+    );
+    event RoundFinalized(
+        uint256 indexed campaignId,
+        uint8 indexed round,
+        string newGlobalModelCID
+    );
+    event CampaignCompleted(
+        uint256 indexed campaignId,
+        uint8 indexed round,
+        string finalGlobalModelCID
+    );
+    event GlobalModelChanged(
+        uint256 indexed campaignId,
+        uint8 indexed round,
+        CampaignState state,
+        string finalGlobalModelCID
+    );
+    event CampaignCancelled(uint256 indexed campaignId);
+    event CampaignStateChanged(
+        uint256 indexed campaignId,
+        CampaignState newState
+    );
 
+    // --- Constructor ---
     constructor(address initialOwner) Ownable(initialOwner) {}
 
     // --- Functions ---
 
     /**
-     * @dev Starts a new training round.
-     * Can only be called by the owner.
-     * Uses the global model CID already stored in the contract.
+     * @dev Creates and starts a new training campaign. Defines all parameters upfront.
+     * Can only be called by the contract owner.
+     * @param _participants An array of addresses for the authorized training nodes.
+     * @param _totalRounds The total number of training rounds for this campaign.
+     * @param _initialModelCID The IPFS CID of the model to be used for the first round.
+     * @notice The number of epochs is a client-side parameter for local training
+     * and is not stored or enforced on-chain.
      */
-    // --- MODIFIED FUNCTION ---
-    function startNewRound() external onlyOwner {
-        require(currentRoundState == RoundState.INACTIVE, "An existing round is active");
-        require(bytes(globalModelCID).length > 0, "Global model CID must be set first");
+    // --- NEW: Replaces startNewRound() and setGlobalModelCID() ---
+    function createTrainingCampaign(
+        address[] memory _participants,
+        uint8 _totalRounds,
+        string memory _initialModelCID,
+        // --- NEW PARAMETERS ---
+        uint256 _submissionPeriod, // e.g., 3600 seconds for a 1-hour deadline
+        uint8 _minSubmissions // The minimum number of submissions required
+    ) external onlyOwner {
+        require(
+            campaigns[activeCampaignId].state == CampaignState.INACTIVE,
+            "An existing campaign is active"
+        );
+        require(
+            _participants.length > 0,
+            "Must provide at least one participant"
+        );
+        require(
+            _minSubmissions > 0 && _minSubmissions <= _participants.length,
+            "Invalid min submissions"
+        );
+        require(_submissionPeriod > 0, "Submission period must be positive");
 
-        currentRound++;
-        currentRoundState = RoundState.SUBMISSION;
-        emit NewRoundStarted(currentRound, globalModelCID); // Now uses the state variable
-        emit RoundStateChanged(currentRound, RoundState.SUBMISSION);
+        campaignCounter++;
+        activeCampaignId = campaignCounter;
+
+        Campaign storage newCampaign = campaigns[activeCampaignId];
+        newCampaign.id = activeCampaignId;
+        newCampaign.totalRounds = _totalRounds;
+        newCampaign.currentRound = 1;
+        newCampaign.state = CampaignState.SUBMISSION;
+        newCampaign.globalModelCID = _initialModelCID;
+        // --- SET NEW VARIABLES ---
+        newCampaign.minSubmissions = _minSubmissions;
+        newCampaign.submissionDeadline = block.timestamp + _submissionPeriod;
+        newCampaign.submissionCounter = 0; // Reset for the first round
+
+        for (uint i = 0; i < _participants.length; i++) {
+            newCampaign.participants[_participants[i]] = true;
+        }
+
+        emit CampaignCreated(activeCampaignId, _totalRounds, _initialModelCID);
+        emit CampaignStateChanged(activeCampaignId, CampaignState.SUBMISSION);
+        emit GlobalModelChanged(newCampaign.id, newCampaign.currentRound, newCampaign.state, _initialModelCID);
     }
 
     /**
-     * @dev Submits a locally trained model's CID for the current round.
-     * Called by training nodes.
+     * @dev Submits a locally trained model's CID for the current round of the active campaign.
+     * Can only be called by an authorized participant for the active campaign.
      * @param _modelCID The IPFS CID of the new local model.
      */
     function submitModel(string memory _modelCID) external {
-        require(currentRoundState == RoundState.SUBMISSION, "Not in submission phase");
-        require(bytes(roundSubmissions[currentRound][msg.sender]).length == 0, "Already submitted for this round");
+        Campaign storage campaign = campaigns[activeCampaignId];
+        uint8 round = campaign.currentRound;
 
-        roundSubmissions[currentRound][msg.sender] = _modelCID;
-        modelsInRound[currentRound].push(ModelSubmission({
-            cid: _modelCID,
-            trainer: msg.sender,
-            positiveVotes: 0
-        }));
-        emit ModelSubmitted(currentRound, msg.sender, _modelCID);
+        require(
+            campaign.state == CampaignState.SUBMISSION,
+            "Not in submission phase"
+        );
+        require(
+            block.timestamp <= campaign.submissionDeadline,
+            "Submission period has ended"
+        );
+        require(
+            campaign.participants[msg.sender],
+            "Not an authorized trainer for this campaign"
+        );
+        require(
+            bytes(roundSubmissions[activeCampaignId][round][msg.sender])
+                .length == 0,
+            "Already submitted for this round"
+        );
+
+        roundSubmissions[activeCampaignId][round][msg.sender] = _modelCID;
+        modelsInRound[activeCampaignId][round].push(
+            ModelSubmission({
+                cid: _modelCID,
+                trainer: msg.sender,
+                positiveVotes: 0 // Note: Validation is removed per instructions
+            })
+        );
+
+        // --- NEW: Increment the submission counter ---
+        campaign.submissionCounter++;
+
+        emit ModelSubmitted(activeCampaignId, round, msg.sender, _modelCID);
     }
 
     /**
-     * @dev Submits a validation judgment for a specific model in the current round.
-     * Called by validator nodes.
-     * @param _modelCID The CID of the model being validated.
-     * @param _isValid The validator's judgment (true for valid, false for invalid).
+     * @dev NEW FUNCTION: Triggers the move to the AGGREGATION state.
+     * Anyone can call this function. It will only succeed if the conditions are met.
+     * This prevents a single user from being burdened with high gas costs on submission.
      */
-    function validateModel(string memory _modelCID, bool _isValid) external {
-        require(currentRoundState == RoundState.VALIDATION, "Not in validation phase");
-        require(!modelValidators[currentRound][_modelCID][msg.sender], "Already voted on this model");
+    function attemptAggregation() external {
+        Campaign storage campaign = campaigns[activeCampaignId];
+        require(
+            campaign.state == CampaignState.SUBMISSION,
+            "Not in submission phase"
+        );
 
-        modelValidators[currentRound][_modelCID][msg.sender] = true;
+        // --- NEW: Check for either condition to be true ---
+        bool deadlineReached = block.timestamp > campaign.submissionDeadline;
+        bool thresholdMet = campaign.submissionCounter >= campaign.minSubmissions;
 
-        if (_isValid) {
-            for (uint i = 0; i < modelsInRound[currentRound].length; i++) {
-                if (keccak256(abi.encodePacked(modelsInRound[currentRound][i].cid)) == keccak256(abi.encodePacked(_modelCID))) {
-                    modelsInRound[currentRound][i].positiveVotes++;
-                    break;
-                }
-            }
-        }
+        require(
+            deadlineReached || thresholdMet,
+            "Aggregation conditions not met"
+        );
 
-        emit ModelValidated(currentRound, msg.sender, _modelCID, _isValid);
+        campaign.state = CampaignState.AGGREGATION;
+        emit CampaignStateChanged(activeCampaignId, CampaignState.AGGREGATION);
     }
 
+    // /**
+    //  * @dev Submits a validation for a model in the current round of the active campaign.
+    //  * @param _modelCID The CID of the model being validated.
+    //  * @param _isValid The validator's judgment (true for valid, false for invalid).
+    //  */
+    // function validateModel(string memory _modelCID, bool _isValid) external {
+    //     Campaign storage campaign = campaigns[activeCampaignId];
+    //     uint8 round = campaign.currentRound;
+
+    //     require(campaign.state == CampaignState.VALIDATION, "Not in validation phase");
+    //     require(!modelValidators[activeCampaignId][round][_modelCID][msg.sender], "Already voted on this model");
+
+    //     modelValidators[activeCampaignId][round][_modelCID][msg.sender] = true;
+
+    //     if (_isValid) {
+    //         for (uint i = 0; i < modelsInRound[activeCampaignId][round].length; i++) {
+    //             if (keccak256(abi.encodePacked(modelsInRound[activeCampaignId][round][i].cid)) == keccak256(abi.encodePacked(_modelCID))) {
+    //                 modelsInRound[activeCampaignId][round][i].positiveVotes++;
+    //                 break;
+    //             }
+    //         }
+    //     }
+    //     emit ModelValidated(activeCampaignId, round, msg.sender, _modelCID, _isValid);
+    // }
+
     /**
-     * @dev Finalizes the round with the new aggregated global model CID.
+     * @dev Finalizes the current round and, if applicable, automatically starts the next one.
      * Called by the aggregator node.
-     * @param _newGlobalModelCID The IPFS CID of the new global model.
+     * If this was the final round, the campaign is completed.
+     * @param _newGlobalModelCID The IPFS CID of the new aggregated global model.
      */
-    function finalizeRound(string memory _newGlobalModelCID) external onlyOwner {
-        require(currentRoundState == RoundState.AGGREGATION, "Not in aggregation phase");
-        
-        globalModelCID = _newGlobalModelCID;
-        currentRoundState = RoundState.INACTIVE;
+    // --- MODIFIED: Now contains automatic round progression logic ---
+    function finalizeRound(
+        string memory _newGlobalModelCID
+    ) external onlyOwner {
+        Campaign storage campaign = campaigns[activeCampaignId];
+        uint8 round = campaign.currentRound;
 
-        emit RoundFinalized(currentRound, _newGlobalModelCID);
-        emit RoundStateChanged(currentRound, RoundState.INACTIVE);
+        require(
+            campaign.state == CampaignState.AGGREGATION,
+            "Not in aggregation phase"
+        );
+        require(
+            bytes(_newGlobalModelCID).length > 0,
+            "New global model CID cannot be empty"
+        );
+
+        campaign.globalModelCID = _newGlobalModelCID;
+        campaign.submissionCounter = 0;
+
+        emit GlobalModelChanged(campaign.id, round, campaign.state, _newGlobalModelCID);
+        emit RoundFinalized(activeCampaignId, round, _newGlobalModelCID);
+        
+        // Check if the campaign is complete
+        if (round == campaign.totalRounds) {
+            campaign.state = CampaignState.INACTIVE;
+            emit CampaignCompleted(activeCampaignId, campaign.currentRound,_newGlobalModelCID);
+            emit CampaignStateChanged(activeCampaignId, CampaignState.INACTIVE);
+        } else {
+            // Automatically start the next round
+            campaign.currentRound++;
+            campaign.state = CampaignState.SUBMISSION;
+            emit NewRoundStarted(
+                activeCampaignId,
+                campaign.currentRound,
+                _newGlobalModelCID
+            );
+            emit CampaignStateChanged(
+                activeCampaignId,
+                CampaignState.SUBMISSION
+            );
+        }
+    }
+
+    /**
+     * @dev Cancels the currently active campaign.
+     */
+    function cancelCampaign() external onlyOwner {
+        Campaign storage campaign = campaigns[activeCampaignId];
+        require(
+            campaign.state != CampaignState.INACTIVE,
+            "No active campaign to cancel"
+        );
+
+        // Mark the campaign as inactive to release the lock
+        campaign.state = CampaignState.INACTIVE;
+
+        emit CampaignCancelled(activeCampaignId);
+        emit CampaignStateChanged(activeCampaignId, CampaignState.INACTIVE);
     }
 
     // --- View Functions ---
 
     /**
-     * @dev Returns a list of model CIDs that have met the required validation threshold.
-     * Called by the aggregator to know which models to fetch from IPFS.
+     * @dev Returns CIDs of models that have met the validation threshold for the current round.
      */
     function getValidModelsForCurrentRound() external view returns (string[] memory) {
+        require(activeCampaignId > 0, "No campaign is active");
+        Campaign storage campaign = campaigns[activeCampaignId];
+        uint8 round = campaign.currentRound;
+
         uint256 validCount = 0;
-        for (uint i = 0; i < modelsInRound[currentRound].length; i++) {
-            if (modelsInRound[currentRound][i].positiveVotes >= REQUIRED_VALIDATIONS) {
+        for (uint i = 0; i < modelsInRound[activeCampaignId][round].length; i++) {
+            if (modelsInRound[activeCampaignId][round][i].positiveVotes >= REQUIRED_VALIDATIONS) {
                 validCount++;
             }
         }
 
         string[] memory validModels = new string[](validCount);
         uint256 index = 0;
-        for (uint i = 0; i < modelsInRound[currentRound].length; i++) {
-            if (modelsInRound[currentRound][i].positiveVotes >= REQUIRED_VALIDATIONS) {
-                validModels[index] = modelsInRound[currentRound][i].cid;
+        for (uint i = 0; i < modelsInRound[activeCampaignId][round].length; i++) {
+            if (modelsInRound[activeCampaignId][round][i].positiveVotes >= REQUIRED_VALIDATIONS) {
+                validModels[index] = modelsInRound[activeCampaignId][round][i].cid;
                 index++;
             }
         }
         return validModels;
-    }
-    
-    // --- State Management (Owner only) ---
-    
-    /**
-     * @dev Sets or overwrites the global model CID. Can only be called by the owner.
-     * @param _newGlobalModelCID The IPFS CID for the global model.
-     */
-    // --- NEW FUNCTION ---
-    function setGlobalModelCID(string memory _newGlobalModelCID) external onlyOwner {
-        require(bytes(_newGlobalModelCID).length > 0, "CID cannot be empty");
-        require(currentRoundState == RoundState.INACTIVE, "Cannot set model during an active round");
-        globalModelCID = _newGlobalModelCID;
-        emit GlobalModelUpdated(_newGlobalModelCID);
-    }
-
-    /**
-     * @dev Manually moves the round to the next state.
-     * In a production system, this would be automated by timers.
-     */
-    function advanceRoundState() external onlyOwner {
-        require(currentRoundState != RoundState.INACTIVE, "No active round");
-
-        if (currentRoundState == RoundState.SUBMISSION) {
-            currentRoundState = RoundState.VALIDATION;
-            emit RoundStateChanged(currentRound, RoundState.VALIDATION);
-        } else if (currentRoundState == RoundState.VALIDATION) {
-            currentRoundState = RoundState.AGGREGATION;
-            emit RoundStateChanged(currentRound, RoundState.AGGREGATION);
-        }
-    }
-
-    function cancelRound() external onlyOwner {
-        require(currentRoundState != RoundState.INACTIVE, "No active round to cancel");
-        uint256 roundToCancel = currentRound;
-
-        currentRoundState = RoundState.INACTIVE;
-        currentRound--; // Revert the round increment from startNewRound
-
-        // Clean up data for the cancelled round to prevent side-effects
-        delete modelsInRound[roundToCancel];
-
-        emit RoundCancelled(roundToCancel);
-        emit RoundStateChanged(roundToCancel, RoundState.INACTIVE);
     }
 }

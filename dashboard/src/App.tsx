@@ -20,6 +20,10 @@ import {
     TableContainer,
     TableHead,
     TableRow,
+    TextField,
+    List,
+    ListItem,
+    ListItemText,
 } from '@mui/material';
 import { UploadFile } from '@mui/icons-material';
 
@@ -28,17 +32,28 @@ const API_URL = 'http://localhost:3001/api';
 const WS_URL = 'ws://localhost:3001';
 
 interface SystemStatus {
+    campaign: string;
     round: string;
     cid: string;
     state: string;
 }
 
 interface HistoryItem {
-    round: string;
-    block_hash: string;
-    transaction_hash: string;
-    cid: string;
+    campaignId: string;
+    newState: string;
+    txHash: string;
+    timestamp: number; // Added timestamp
 }
+
+interface HistoryGlobalModel {
+    campaignId: string;
+    state: string;
+    round: string;
+    cid: string;
+    txHash: string;
+    timestamp: number; // Added timestamp
+}
+
 
 interface ActionResponse {
     success: boolean;
@@ -50,38 +65,58 @@ interface ApiError {
     error: string;
 }
 
+interface CampaignFormData {
+    totalRounds: string;
+    minSubmissions: string;
+    submissionPeriod: string;
+    initialModelCID: string;
+}
+
 // --- Component ---
 const App: React.FC = () => {
     // --- State Management ---
-    const [status, setStatus] = useState<SystemStatus>({ round: '...', cid: '', state: '...' });
+    const [status, setStatus] = useState<SystemStatus>({ campaign: '...', round: '...', cid: '', state: '...' });
     const [history, setHistory] = useState<HistoryItem[]>([]);
+    const [globalModels, setGlobalModels] = useState<HistoryGlobalModel[]>([]);
+    const [participants, setParticipants] = useState<string[]>([]);
     const [isLoading, setIsLoading] = useState<boolean>(true);
-    const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
-    const [isUploading, setIsUploading] = useState<boolean>(false);
     const [isCancelling, setIsCancelling] = useState<boolean>(false);
+    const [isCreatingCampaign, setIsCreatingCampaign] = useState<boolean>(false);
+    const [isUploading, setIsUploading] = useState<boolean>(false);
     const [error, setError] = useState<string>('');
     const [success, setSuccess] = useState<string>('');
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
+    const [formData, setFormData] = useState<CampaignFormData>({
+        totalRounds: '10',
+        minSubmissions: '1',
+        submissionPeriod: '3600',
+        initialModelCID: '',
+    });
 
     useEffect(() => {
         const ws = new WebSocket(WS_URL);
 
         ws.onopen = () => {
-            console.log('WebSocket connection established.');
+            console.log('WebSocket connection established. Registering as dashboard...');
+            // This message tells the backend to add this connection to the broadcast list
+            ws.send(JSON.stringify({ type: 'register_dashboard' }));
         };
 
         ws.onmessage = (event) => {
             try {
-                const { status: newStatus, history: newHistory } = JSON.parse(event.data);
-                if (newStatus && newHistory) {
-                    setStatus(newStatus);
-                    setHistory(newHistory);
+                // --- MODIFICATION: Destructure participants as well ---
+                const { status: newStatus, stateHistory: newHistory, participants: newParticipants, modelHistory: newModels } = JSON.parse(event.data);
+                if (newStatus) setStatus(newStatus);
+                if (newHistory) setHistory(newHistory);
+                if (newParticipants) setParticipants(newParticipants);
+                if (newModels) setGlobalModels(newModels);
+                // --- MODIFICATION: Pre-fill form with existing CID ---
+                if (newStatus.cid && !formData.initialModelCID) {
+                    setFormData(prev => ({ ...prev, initialModelCID: newStatus.cid }));
                 }
+
                 if (isLoading) setIsLoading(false);
-            } catch (err) {
-                console.error('Failed to parse WebSocket message:', err);
-                setError('Received invalid data from the server.');
-            }
+            } catch (err) { /* ... */ }
         };
 
         ws.onerror = () => {
@@ -93,30 +128,27 @@ const App: React.FC = () => {
         return () => {
             ws.close();
         };
-    }, [isLoading]); // Dependency array to manage connection lifecycle
-
-    // --- Event Handlers ---
-    const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-        const file = event.target.files?.[0];
-        if (file) {
-            setSelectedFile(file);
-            setError('');
-            setSuccess('');
-        }
+    }, [isLoading, formData.initialModelCID]); // Dependency array to manage connection lifecycle
+    const handleFormChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const { name, value } = event.target;
+        setFormData(prev => ({ ...prev, [name]: value }));
     };
-
-    // --- MODIFIED: This function now sets the initial model on the contract ---
-    const handleSetInitialModel = async () => {
-        if (!selectedFile) {
+    // --- Event Handlers ---
+    const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) {
             setError("Please select a model file first.");
             return;
         }
+        setSelectedFile(file);
+        setError('');
+        setSuccess('');
         setIsUploading(true);
         setError('');
         setSuccess('');
 
         const formData = new FormData();
-        formData.append('modelFile', selectedFile);
+        formData.append('modelFile', file);
 
         try {
             // --- MODIFIED: Endpoint changed to `/set-initial-model` ---
@@ -126,6 +158,8 @@ const App: React.FC = () => {
             if (response.data.success && response.data.initialModelCID) {
                 setSuccess(`Initial model set successfully! CID: ${response.data.initialModelCID}`);
                 setSelectedFile(null); // Clear the file input
+                const new_cid = response.data.initialModelCID;
+                setFormData(prev => ({ ...prev, initialModelCID: new_cid }));
             }
         } catch (err) {
             const message = (axios.isAxiosError<ApiError>(err) && err.response?.data?.error)
@@ -137,26 +171,24 @@ const App: React.FC = () => {
         }
     };
 
-    // --- MODIFIED: This function no longer sends a CID ---
-    const handleStartRound = async () => {
-        setIsSubmitting(true);
-        setError('');
-        setSuccess('');
+    const handleCreateCampaign = async () => {
+        setIsCreatingCampaign(true);
+        // ...
         try {
-            // --- MODIFIED: Endpoint changed to `/start-round` and body removed ---
-            const response = await axios.post<ActionResponse>(`${API_URL}/train`);
-            setSuccess(`New round started successfully! TxHash: ${response.data.txHash}`);
-        } catch (err) {
-            const message = (axios.isAxiosError<ApiError>(err) && err.response?.data?.error)
-                ? err.response.data.error
-                : "An unknown error occurred during the transaction.";
-            setError(message);
-        } finally {
-            setIsSubmitting(false);
-        }
+            const payload = {
+                participants,
+                totalRounds: parseInt(formData.totalRounds, 10),
+                minSubmissions: parseInt(formData.minSubmissions, 10),
+                submissionPeriod: parseInt(formData.submissionPeriod, 10),
+                initialModelCID: formData.initialModelCID,
+            };
+            const response = await axios.post<ActionResponse>(`${API_URL}/train`, payload);
+            setSuccess(`New campaign started successfully! TxHash: ${response.data.txHash}`);
+        } catch (err) { /* ... */ }
+        finally { setIsCreatingCampaign(false); }
     };
 
-    const handleCancelRound = async () => {
+    const handleCancelCampaign = async () => {
         setIsCancelling(true);
         setError('');
         setSuccess('');
@@ -173,32 +205,12 @@ const App: React.FC = () => {
         }
     };
 
-    // --- Render Logic ---
-    const renderInitialSetup = () => (
-        <Paper variant="outlined" sx={{ p: 2, mb: 2, backgroundColor: '#f0f4f8' }}>
-            <Typography variant="h6" gutterBottom>Initial Model Setup</Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                No global model found. Upload an initial model (e.g., .h5) to set it on the blockchain and begin the first training round.
-            </Typography>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                <Button component="label" variant="outlined" startIcon={<UploadFile />}>
-                    Choose File
-                    <input type="file" hidden onChange={handleFileChange} />
-                </Button>
-                {selectedFile && <Typography variant="body2">{selectedFile.name}</Typography>}
-                <Button variant="contained" color="secondary" onClick={handleSetInitialModel} disabled={!selectedFile || isUploading}>
-                    {isUploading ? <CircularProgress size={24} /> : 'Upload & Set Model'}
-                </Button>
-            </Box>
-        </Paper>
-    );
-
     return (
         <>
             <CssBaseline />
             <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
                 <Typography variant="h3" component="h1" gutterBottom align="center">
-                    Federated Learning Control Panel ⚙️
+                    Federated Learning Control Panel
                 </Typography>
 
                 {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
@@ -210,6 +222,7 @@ const App: React.FC = () => {
                         <Card sx={{ height: '100%' }}>
                             <CardContent>
                                 <Typography variant="h5" component="h2" gutterBottom>System Status</Typography>
+                                <Typography><strong>Current Campaign:</strong> {isLoading ? <CircularProgress size={16} /> : status.campaign}</Typography>
                                 <Typography><strong>Current Round:</strong> {isLoading ? <CircularProgress size={16} /> : status.round}</Typography>
                                 <Typography><strong>Round State:</strong> {isLoading ? <CircularProgress size={16} /> : status.state}</Typography>
                                 <Typography sx={{ wordBreak: 'break-all' }}><strong>Global Model CID:</strong> {isLoading ? <CircularProgress size={16} /> : status.cid || 'N/A'}</Typography>
@@ -217,61 +230,65 @@ const App: React.FC = () => {
                         </Card>
                     </Grid>
 
-                    {/* --- MODIFIED: Actions Card is simplified --- */}
-                    <Grid size={{ xs: 12, md: 6 }}>
+                    <Grid size={{ xs: 12 }}>
                         <Card>
                             <CardContent>
-                                <Typography variant="h5" gutterBottom>Admin Actions</Typography>
-                                {/* The initial setup is now shown only if the CID is not set */}
-                                {!status.cid && status.state === 'INACTIVE' && renderInitialSetup()}
-
-                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                                    <Button
-                                        variant="contained"
-                                        onClick={handleStartRound}
-                                        // The button requires a model to be set and the round to be inactive
-                                        disabled={isSubmitting || !status.cid || status.state !== 'INACTIVE'}>
-                                        {isSubmitting ? <CircularProgress size={24} /> : `Start Round ${parseInt(status.round, 10) + 1}`}
+                                <Typography variant="h5" gutterBottom>Create New Campaign</Typography>
+                                <Grid container spacing={2}>
+                                    {/* Column 1: Parameters */}
+                                    <Grid size={{ xs: 12, md: 6 }}>
+                                        <TextField name="totalRounds" label="Total Rounds" value={formData.totalRounds} onChange={handleFormChange} fullWidth margin="normal" type="number" />
+                                        <TextField name="minSubmissions" label="Minimum Submissions" value={formData.minSubmissions} onChange={handleFormChange} fullWidth margin="normal" type="number" />
+                                        <TextField name="submissionPeriod" label="Submission Period (seconds)" value={formData.submissionPeriod} onChange={handleFormChange} fullWidth margin="normal" type="number" />
+                                    </Grid>
+                                    {/* Column 2: Initial Model & Participants */}
+                                    <Grid size={{ xs: 12, md: 6 }}>
+                                        <TextField name="initialModelCID" label="Initial Model CID" value={formData.initialModelCID} onChange={handleFormChange} fullWidth margin="normal" helperText="Pre-filled from last campaign, or upload a new model below." />
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, my: 1 }}>
+                                            <Button component="label" variant="outlined" startIcon={<UploadFile />}>Choose File<input type="file" hidden onChange={handleFileChange} /></Button>
+                                            {selectedFile && <Typography variant="body2">{selectedFile.name}</Typography>}
+                                            {/* <Button onClick={handleSetInitialModel} disabled={!selectedFile || isUploading}>{isUploading ? <CircularProgress size={24} /> : 'Upload for CID'}</Button> */}
+                                        </Box>
+                                        <Typography variant="subtitle2" sx={{ mt: 2 }}>Connected Participants ({participants.length})</Typography>
+                                        <Paper variant="outlined" sx={{ maxHeight: 100, overflow: 'auto' }}>
+                                            <List dense>{participants.map(p => <ListItem key={p}><ListItemText primary={p} /></ListItem>)}</List>
+                                        </Paper>
+                                    </Grid>
+                                </Grid>
+                                <Box sx={{ mt: 2, display: 'flex', gap: 2 }}>
+                                    <Button variant="contained" onClick={handleCreateCampaign} disabled={isCreatingCampaign || status.state !== 'INACTIVE' || participants.length === 0}>
+                                        {isCreatingCampaign ? <CircularProgress size={24} /> : 'Start Campaign'}
                                     </Button>
-                                    <Button
-                                        variant="outlined"
-                                        color="warning"
-                                        onClick={handleCancelRound}
-                                        // Disabled if no round is active
-                                        disabled={isCancelling || status.state === 'INACTIVE'}>
-                                        {isCancelling ? <CircularProgress size={24} /> : 'Cancel Current Round'}
+                                    <Button variant="outlined" color="warning" onClick={handleCancelCampaign} disabled={isCancelling || !(status.state in ['INACTIVE', 'Error'])}>
+                                        {isCancelling ? <CircularProgress size={24} /> : 'Cancel Active Campaign'}
                                     </Button>
                                 </Box>
-                                <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 1 }}>
-                                    The "Start Round" button is only enabled when a global model exists and the system is INACTIVE.
-                                </Typography>
                             </CardContent>
                         </Card>
                     </Grid>
-
-                                        {/* --- MODIFIED: History Card now displays a Table --- */}
+                    {/* --- MODIFIED: History Card now displays a Table --- */}
                     <Grid size={{ xs: 12 }}>
                         <Card sx={{ height: '100%' }}>
                             <CardContent>
-                                <Typography variant="h5" component="h2" gutterBottom>Global Models History</Typography>
+                                <Typography variant="h5" component="h2" gutterBottom>Campaign State History</Typography>
                                 {isLoading ? <CircularProgress /> : history.length > 0 ? (
                                     <TableContainer component={Paper} sx={{ maxHeight: 220 }}>
                                         <Table stickyHeader size="small">
                                             <TableHead>
                                                 <TableRow>
-                                                    <TableCell sx={{ fontWeight: 'bold' }}>Block Hash</TableCell>
                                                     <TableCell sx={{ fontWeight: 'bold' }}>Transction Hash</TableCell>
-                                                    <TableCell sx={{ fontWeight: 'bold' }}>Round</TableCell>
-                                                    <TableCell sx={{ fontWeight: 'bold' }}>Final Global Model CID</TableCell>
+                                                    <TableCell sx={{ fontWeight: 'bold' }}>Timestamp</TableCell>
+                                                    <TableCell sx={{ fontWeight: 'bold' }}>Campaign</TableCell>
+                                                    <TableCell sx={{ fontWeight: 'bold' }}>New State</TableCell>
                                                 </TableRow>
                                             </TableHead>
                                             <TableBody>
                                                 {history.slice().reverse().map((item) => (
-                                                    <TableRow hover key={item.round}>
-                                                        <TableCell>{item.round}</TableCell>
-                                                        <TableCell>{item.round}</TableCell>
-                                                        <TableCell>{item.round}</TableCell>
-                                                        <TableCell sx={{ wordBreak: 'break-all' }}>{item.cid}</TableCell>
+                                                    <TableRow hover key={item.txHash}>
+                                                        <TableCell>{item.txHash}</TableCell>
+                                                        <TableCell>{item.timestamp}</TableCell>
+                                                        <TableCell>{item.campaignId}</TableCell>
+                                                        <TableCell>{item.newState}</TableCell>
                                                     </TableRow>
                                                 ))}
                                             </TableBody>
@@ -279,6 +296,43 @@ const App: React.FC = () => {
                                     </TableContainer>
                                 ) : (
                                     <Typography variant="body2" color="text.secondary">No completed rounds yet.</Typography>
+                                )}
+                            </CardContent>
+                        </Card>
+                    </Grid>
+                    <Grid size={{ xs: 12 }}>
+                        <Card sx={{ height: '100%' }}>
+                            <CardContent>
+                                <Typography variant="h5" component="h2" gutterBottom>Global Model History</Typography>
+                                {isLoading ? <CircularProgress /> : history.length > 0 ? (
+                                    <TableContainer component={Paper} sx={{ maxHeight: 220 }}>
+                                        <Table stickyHeader size="small">
+                                            <TableHead>
+                                                <TableRow>
+                                                    <TableCell sx={{ fontWeight: 'bold' }}>Transction Hash</TableCell>
+                                                    <TableCell sx={{ fontWeight: 'bold' }}>Timestamp</TableCell>
+                                                    <TableCell sx={{ fontWeight: 'bold' }}>Campaign</TableCell>
+                                                    <TableCell sx={{ fontWeight: 'bold' }}>State</TableCell>
+                                                    <TableCell sx={{ fontWeight: 'bold' }}>Round</TableCell>
+                                                    <TableCell sx={{ fontWeight: 'bold' }}>CID</TableCell>
+                                                </TableRow>
+                                            </TableHead>
+                                            <TableBody>
+                                                {globalModels.slice().reverse().map((item) => (
+                                                    <TableRow hover key={item.txHash}>
+                                                        <TableCell>{item.txHash}</TableCell>
+                                                        <TableCell>{item.timestamp}</TableCell>
+                                                        <TableCell>{item.campaignId}</TableCell>
+                                                        <TableCell>{item.state}</TableCell>
+                                                        <TableCell>{item.round}</TableCell>
+                                                        <TableCell>{item.cid}</TableCell>
+                                                    </TableRow>
+                                                ))}
+                                            </TableBody>
+                                        </Table>
+                                    </TableContainer>
+                                ) : (
+                                    <Typography variant="body2" color="text.secondary">No global model yet.</Typography>
                                 )}
                             </CardContent>
                         </Card>
