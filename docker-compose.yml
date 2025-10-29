@@ -22,6 +22,32 @@ services:
       # Applies a 'server' profile, optimizing the node for a stable environment
       - IPFS_PROFILE=server
 
+  fl-be:
+    build:
+      context: ./fl-be
+      dockerfile: Dockerfile
+    image: pione_fl-fl-be:latest
+    container_name: pione_fl_fl-be
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+    ports:
+      - "3001:3001"
+    depends_on:
+      - ipfs_node
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    image: pione_fl-dashboard:latest
+    container_name: pione_fl_dashboard
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - fl-be
+
 # volumes:
 #   ipfs_data:
 #     # This named volume will persist your IPFS data across container restarts
