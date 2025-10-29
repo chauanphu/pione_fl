@@ -45,6 +45,8 @@ const ipfs = create({ url: IPFS_API_URL });
 const upload = multer({ storage: multer.memoryStorage() });
 
 console.log(`✅ Connected to contract at ${CONTRACT_ADDRESS}`);
+console.log(`✅ Connected to blockchain via ${RPC_URL}`);
+console.log(`✅ Connected to Admin Wallet ${adminWallet.address}`);
 console.log(`✅ Connected to IPFS node at ${IPFS_API_URL}`);
 console.log(`✅ ML Service URL set to ${ML_SERVICE_URL}`);
 
@@ -267,11 +269,10 @@ app.post('/api/upload', upload.single('modelFile'), async (req, res) => {
     try {
         const { cid } = await ipfs.add(req.file.buffer);
         const newCID = cid.toString();
-        // const tx = await flContract.setGlobalModelCID(newCID);
-        // await tx.wait();
-        // console.log(`✅ Global model CID set successfully. TxHash: ${tx.hash}`);
+        const tx = await flContract.setGlobalModelCID(newCID);
+        await tx.wait();
+        console.log(`✅ Global model CID set successfully. TxHash: ${tx.hash}`);
 
-        // --- MODIFICATION: Broadcast update after action ---
         broadcastUpdate();
 
         res.status(201).json({

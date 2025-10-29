@@ -149,7 +149,7 @@ const App: React.FC = () => {
 
         const formData = new FormData();
         formData.append('modelFile', file);
-
+        console.log("Uploading file:", file.name);
         try {
             // --- MODIFIED: Endpoint changed to `/set-initial-model` ---
             const response = await axios.post<ActionResponse>(`${API_URL}/upload`, formData, {
@@ -243,9 +243,18 @@ const App: React.FC = () => {
                                     </Grid>
                                     {/* Column 2: Initial Model & Participants */}
                                     <Grid size={{ xs: 12, md: 6 }}>
-                                        <TextField name="initialModelCID" label="Initial Model CID" value={formData.initialModelCID} onChange={handleFormChange} fullWidth margin="normal" helperText="Pre-filled from last campaign, or upload a new model below." />
+                                        <TextField
+                                            name="initialModelCID"
+                                            label="Initial Model CID" // Corrected: Use a static, descriptive label.
+                                            value={formData.initialModelCID || 'No Global Model'} // Display a message if the value is empty.
+                                            fullWidth
+                                            margin="normal"
+                                            helperText="Immutable — filled from last campaign or set by the system. Not editable via dashboard."
+                                            InputProps={{ readOnly: true }}
+                                            disabled
+                                        />
                                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, my: 1 }}>
-                                            <Button component="label" variant="outlined" startIcon={<UploadFile />}>Choose File<input type="file" hidden onChange={handleFileChange} /></Button>
+                                            <Button component="label" variant="outlined" startIcon={<UploadFile />} disabled={(selectedFile !== null) || isUploading}>Choose File<input type="file" hidden onChange={handleFileChange} /></Button>
                                             {selectedFile && <Typography variant="body2">{selectedFile.name}</Typography>}
                                             {/* <Button onClick={handleSetInitialModel} disabled={!selectedFile || isUploading}>{isUploading ? <CircularProgress size={24} /> : 'Upload for CID'}</Button> */}
                                         </Box>
