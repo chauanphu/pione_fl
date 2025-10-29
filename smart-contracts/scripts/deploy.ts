@@ -1,15 +1,13 @@
-import { network } from "hardhat";
-
-const { ethers } = await network.connect({
-  network: "localhost",
-  chainType: "l1",
-});
+import hre from "hardhat";
 
 async function main() {
-  const [deployer] = await ethers.getSigners();
+  const connection = await hre.network.connect();
+
+  const [deployer] = await connection.ethers.getSigners();
+
   console.log(`Deploying contract with the account: ${deployer.address}`);
 
-  const contractFactory = await ethers.getContractFactory("FederatedLearning");
+  const contractFactory = await connection.ethers.getContractFactory("FederatedLearning");
   const contract = await contractFactory.deploy(deployer.address);
   await contract.waitForDeployment();
   const contractAddress = await contract.getAddress();

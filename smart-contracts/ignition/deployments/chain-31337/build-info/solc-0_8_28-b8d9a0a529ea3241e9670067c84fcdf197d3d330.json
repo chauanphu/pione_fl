@@ -1,0 +1,39 @@
+{
+  "_format": "hh3-sol-build-info-1",
+  "id": "solc-0_8_28-b8d9a0a529ea3241e9670067c84fcdf197d3d330",
+  "solcVersion": "0.8.28",
+  "solcLongVersion": "0.8.28+commit.7893614a",
+  "userSourceNameMap": {
+    "contracts/Simple.sol": "project/contracts/Simple.sol"
+  },
+  "input": {
+    "language": "Solidity",
+    "settings": {
+      "evmVersion": "cancun",
+      "optimizer": {
+        "enabled": true,
+        "runs": 200
+      },
+      "outputSelection": {
+        "*": {
+          "": [
+            "ast"
+          ],
+          "*": [
+            "abi",
+            "evm.bytecode",
+            "evm.deployedBytecode",
+            "evm.methodIdentifiers",
+            "metadata"
+          ]
+        }
+      },
+      "remappings": []
+    },
+    "sources": {
+      "project/contracts/Simple.sol": {
+        "content": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\n\n/**\n * @title SimpleStorage\n * @dev A minimal contract to test basic deployment and state changes.\n */\ncontract SimpleStorage {\n    // A public state variable to store a number.\n    // 'public' automatically creates a getter function for it.\n    uint256 public number;\n\n    /**\n     * @dev The constructor is called once when the contract is deployed.\n     * It sets the initial value of the 'number' variable.\n     */\n    constructor(uint256 _initialNumber) {\n        number = _initialNumber;\n    }\n\n    /**\n     * @dev A function to update the 'number' variable.\n     * @param _newNumber The new number to store.\n     */\n    function setNumber(uint256 _newNumber) public {\n        number = _newNumber;\n    }\n}"
+      }
+    }
+  }
+}
