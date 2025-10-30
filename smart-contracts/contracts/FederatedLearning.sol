@@ -164,6 +164,11 @@ contract FederatedLearning is Ownable {
         }
 
         emit CampaignCreated(activeCampaignId, _totalRounds, _initialModelCID);
+        emit NewRoundStarted(
+            newCampaign.id,
+            newCampaign.currentRound,
+            _initialModelCID
+        );
         emit CampaignStateChanged(activeCampaignId, CampaignState.SUBMISSION);
         emit GlobalModelChanged(newCampaign.id, newCampaign.currentRound, newCampaign.state, _initialModelCID);
     }

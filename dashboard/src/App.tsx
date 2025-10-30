@@ -25,11 +25,11 @@ import {
     ListItem,
     ListItemText,
 } from '@mui/material';
-import { UploadFile } from '@mui/icons-material';
+import { UploadFile, CheckCircle, RadioButtonUnchecked } from '@mui/icons-material';
 
 // --- Constants and Type Definitions ---
-const API_URL = 'http://localhost:3001/api';
-const WS_URL = 'ws://localhost:3001';
+const API_URL = 'http://192.168.1.250:3001/api';
+const WS_URL = 'ws://192.168.1.250:3001';
 
 interface SystemStatus {
     campaign: string;
@@ -52,6 +52,14 @@ interface HistoryGlobalModel {
     cid: string;
     txHash: string;
     timestamp: number; // Added timestamp
+}
+
+interface SystemState {
+    status: SystemStatus;
+    stateHistory: HistoryItem[];
+    modelHistory: HistoryGlobalModel[];
+    participants: string[];
+    submissions: { [nodeAddress: string]: boolean };
 }
 
 
@@ -79,6 +87,7 @@ const App: React.FC = () => {
     const [history, setHistory] = useState<HistoryItem[]>([]);
     const [globalModels, setGlobalModels] = useState<HistoryGlobalModel[]>([]);
     const [participants, setParticipants] = useState<string[]>([]);
+    const [submissions, setSubmissions] = useState<{ [nodeAddress: string]: boolean }>({});
     const [isLoading, setIsLoading] = useState<boolean>(true);
     const [isCancelling, setIsCancelling] = useState<boolean>(false);
     const [isCreatingCampaign, setIsCreatingCampaign] = useState<boolean>(false);
@@ -104,12 +113,13 @@ const App: React.FC = () => {
 
         ws.onmessage = (event) => {
             try {
-                // --- MODIFICATION: Destructure participants as well ---
-                const { status: newStatus, stateHistory: newHistory, participants: newParticipants, modelHistory: newModels } = JSON.parse(event.data);
+                // --- MODIFICATION: Destructure participants and submissions as well ---
+                const { status: newStatus, stateHistory: newHistory, participants: newParticipants, modelHistory: newModels, submissions: newSubmissions } = JSON.parse(event.data);
                 if (newStatus) setStatus(newStatus);
                 if (newHistory) setHistory(newHistory);
                 if (newParticipants) setParticipants(newParticipants);
                 if (newModels) setGlobalModels(newModels);
+                if (newSubmissions) setSubmissions(newSubmissions);
                 // --- MODIFICATION: Pre-fill form with existing CID ---
                 if (newStatus.cid && !formData.initialModelCID) {
                     setFormData(prev => ({ ...prev, initialModelCID: newStatus.cid }));
@@ -168,6 +178,7 @@ const App: React.FC = () => {
             setError(message);
         } finally {
             setIsUploading(false);
+            setSelectedFile(null);
         }
     };
 
@@ -204,6 +215,8 @@ const App: React.FC = () => {
             setIsCancelling(false);
         }
     };
+
+    console.log("Rendering App with status:", status.state);
 
     return (
         <>
@@ -249,7 +262,7 @@ const App: React.FC = () => {
                                             value={formData.initialModelCID || 'No Global Model'} // Display a message if the value is empty.
                                             fullWidth
                                             margin="normal"
-                                            helperText="Immutable — filled from last campaign or set by the system. Not editable via dashboard."
+                                            helperText={isUploading ? "Uploading..." : "Immutable — filled from last campaign or set by the system. Not editable via dashboard."}
                                             InputProps={{ readOnly: true }}
                                             disabled
                                         />
@@ -268,14 +281,66 @@ const App: React.FC = () => {
                                     <Button variant="contained" onClick={handleCreateCampaign} disabled={isCreatingCampaign || status.state !== 'INACTIVE' || participants.length === 0}>
                                         {isCreatingCampaign ? <CircularProgress size={24} /> : 'Start Campaign'}
                                     </Button>
-                                    <Button variant="outlined" color="warning" onClick={handleCancelCampaign} disabled={isCancelling || !(status.state in ['INACTIVE', 'Error'])}>
+                                    <Button variant="outlined" color="warning" onClick={handleCancelCampaign} disabled={isCancelling || ['INACTIVE', 'Error'].includes(status.state)}>
                                         {isCancelling ? <CircularProgress size={24} /> : 'Cancel Active Campaign'}
                                     </Button>
                                 </Box>
                             </CardContent>
                         </Card>
                     </Grid>
-                    {/* --- MODIFIED: History Card now displays a Table --- */}
+
+                    {/* --- NEW: Training Node Submission Status Card --- */}
+                    <Grid size={{ xs: 12 }}>
+                        <Card>
+                            <CardContent>
+                                <Typography variant="h5" component="h2" gutterBottom>Training Node Submission Status</Typography>
+                                <Typography variant="subtitle2" sx={{ mb: 2 }}>Round {status.round} • Campaign {status.campaign}</Typography>
+                                {isLoading ? (
+                                    <CircularProgress />
+                                ) : participants.length === 0 ? (
+                                    <Typography variant="body2" color="text.secondary">No participants connected yet.</Typography>
+                                ) : status.state === 'INACTIVE' ? (
+                                    <Typography variant="body2" color="text.secondary">No active campaign. Start a new campaign to see submission status.</Typography>
+                                ) : (
+                                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                                        {participants.map((participant) => {
+                                            const hasSubmitted = submissions[participant] === true;
+                                            return (
+                                                <Box
+                                                    key={participant}
+                                                    sx={{
+                                                        display: 'flex',
+                                                        alignItems: 'center',
+                                                        gap: 1.5,
+                                                        p: 1.5,
+                                                        borderRadius: 1,
+                                                        backgroundColor: hasSubmitted ? 'rgba(76, 175, 80, 0.1)' : 'rgba(158, 158, 158, 0.1)',
+                                                        border: `1px solid ${hasSubmitted ? '#4CAF50' : '#9E9E9E'}`,
+                                                    }}
+                                                >
+                                                    {hasSubmitted ? (
+                                                        <CheckCircle sx={{ color: '#4CAF50', fontSize: 24 }} />
+                                                    ) : (
+                                                        <RadioButtonUnchecked sx={{ color: '#9E9E9E', fontSize: 24 }} />
+                                                    )}
+                                                    <Box sx={{ flex: 1 }}>
+                                                        <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                                                            {participant}
+                                                        </Typography>
+                                                        <Typography variant="caption" color="text.secondary">
+                                                            {hasSubmitted ? '✓ Model submitted' : '○ Awaiting submission'}
+                                                        </Typography>
+                                                    </Box>
+                                                </Box>
+                                            );
+                                        })}
+                                    </Box>
+                                )}
+                            </CardContent>
+                        </Card>
+                    </Grid>
+
+                    {/* --- History Card --- */}
                     <Grid size={{ xs: 12 }}>
                         <Card sx={{ height: '100%' }}>
                             <CardContent>

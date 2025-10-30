@@ -22,6 +22,13 @@ const __dirname = dirname(__filename);
 import contractArtifact from './abi.json' with { type: 'json' };
 const contractABI = contractArtifact.abi;
 
+// Check if ABI is loaded correctly
+if (!contractABI) {
+    throw new Error("Contract ABI could not be loaded. Please check the abi.json file.");
+} else {
+    console.log("✅ Contract ABI loaded successfully.");
+}
+
 // --- Configuration ---
 const PORT = process.env.PORT || 3001;
 const {
@@ -62,6 +69,10 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 const trainingNodes = new Map();    // Stores WebSocket connections and their public addresses for nodes
 const dashboardClients = new Set(); // Stores WebSocket connections for UI clients
+
+// --- NEW: Training Round Submission State Management ---
+// Structure: { campaignId: { round: { nodeAddress: true } } }
+const roundSubmissions = new Map();
 
 console.log("✅ WebSocket server initialized.");
 
@@ -114,22 +125,35 @@ const getSystemState = async () => {
                 status: { campaign: 'N/A', round: 'N/A', cid: '', state: 'INACTIVE' },
                 stateHistory: stateHistory.reverse(),      // Show newest first
                 modelHistory: finalizedHistory.reverse(), // Show newest first
-                participants
+                participants,
+                submissions: {} // No submissions when no campaign is active
             };
         }
 
         const campaign = await flContract.campaigns(activeCampaignId);
+        const campaignIdStr = activeCampaignId.toString();
+        
+        // --- NEW: Get submissions for current round ---
+        let currentRoundSubmissions = {};
+        if (roundSubmissions.has(campaignIdStr)) {
+            const campaignSubs = roundSubmissions.get(campaignIdStr);
+            const roundStr = campaign.currentRound.toString();
+            if (campaignSubs.has(roundStr)) {
+                currentRoundSubmissions = Object.fromEntries(campaignSubs.get(roundStr));
+            }
+        }
 
         return {
             status: {
-                campaign: activeCampaignId.toString(),
+                campaign: campaignIdStr,
                 round: campaign.currentRound.toString(),
                 cid: campaign.globalModelCID,
                 state: mapRoundState(campaign.state),
             },
             stateHistory: stateHistory.reverse(),      // Show newest first
             modelHistory: finalizedHistory.reverse(), // Show newest first
-            participants
+            participants,
+            submissions: currentRoundSubmissions // Map of nodeAddress: true for submitted nodes
         };
     } catch (error) {
         console.error("Error fetching system state:", error);
@@ -137,7 +161,8 @@ const getSystemState = async () => {
             status: { campaign: 'N/A', round: 'N/A', cid: '', state: 'Error' },
             stateHistory: [],
             finalizedHistory: [],
-            participants: []
+            participants: [],
+            submissions: {}
         };
     }
 };
@@ -173,6 +198,14 @@ wss.on('connection', (ws) => {
             // --- NEW: Differentiate registration type ---
             if (data.type === 'register_node' && data.address) {
                 console.log(`✅ Registered training node: ${data.address}`);
+                // If already exist data.address, delete previous one
+                for (const [key, value] of trainingNodes.entries()) {
+                    if (value === data.address) {
+                        trainingNodes.delete(key);
+                        console.log(`♻️ Removed previous connection for address: ${data.address}`);
+                        break;
+                    }
+                }
                 trainingNodes.set(ws, data.address);
                 broadcastUpdate(); // Notify dashboards of the new participant
             } else if (data.type === 'register_dashboard') {
@@ -182,6 +215,8 @@ wss.on('connection', (ws) => {
                 getSystemState().then(state => ws.send(JSON.stringify(state, (_, value) =>
                     typeof value === 'bigint' ? value.toString() : value
                 )));
+            } else {
+                console.log("Unknown type:", data.type)
             }
         } catch (e) {
             console.error('Failed to parse message or invalid message format.');
@@ -258,6 +293,50 @@ function initializeEventListeners() {
             handleAggregationState(campaignId, campaign.currentRound);
         }
     });
+
+    // --- NEW: Listen for NewRoundStarted event to reset submissions ---
+    flContract.on("NewRoundStarted", async (campaignId, round, initialModelCID) => {
+        const campaignIdStr = campaignId.toString();
+        const roundStr = round.toString();
+        console.log(`🔄 Event Received: New round started for campaign ${campaignIdStr}, round ${roundStr}`);
+        
+        // Reset submissions for the new round
+        if (roundSubmissions.has(campaignIdStr)) {
+            const campaignSubs = roundSubmissions.get(campaignIdStr);
+            campaignSubs.delete(roundStr);
+        }
+        
+        broadcastUpdate();
+    });
+
+    // --- NEW: Listen for ModelSubmitted events from smart contract ---
+    flContract.on("ModelSubmitted", async (campaignId, round, trainer, modelCID) => {
+        const campaignIdStr = campaignId.toString();
+        const roundStr = round.toString();
+        const trainerAddress = trainer;
+        
+        console.log(`📤 Event Received: Training node ${trainerAddress} submitted model for campaign ${campaignIdStr} round ${roundStr}`);
+        console.log(`   Model CID: ${modelCID}`);
+        
+        // Initialize campaign submissions if not exists
+        if (!roundSubmissions.has(campaignIdStr)) {
+            roundSubmissions.set(campaignIdStr, new Map());
+        }
+        
+        const campaignSubs = roundSubmissions.get(campaignIdStr);
+        
+        // Initialize round submissions if not exists
+        if (!campaignSubs.has(roundStr)) {
+            campaignSubs.set(roundStr, new Map());
+        }
+        
+        const roundSubs = campaignSubs.get(roundStr);
+        roundSubs.set(trainerAddress, true);
+        
+        // Broadcast update to all dashboard clients
+        broadcastUpdate();
+    });
+
     console.log("✅ Event listeners initialized.");
 }
 
@@ -267,21 +346,15 @@ app.post('/api/upload', upload.single('modelFile'), async (req, res) => {
     }
     console.log(`Received initial model file: ${req.file.originalname}`);
     try {
+        console.log(`Sending to IPFS...`);
         const { cid } = await ipfs.add(req.file.buffer);
         const newCID = cid.toString();
-        const tx = await flContract.setGlobalModelCID(newCID);
-        await tx.wait();
-        console.log(`✅ Global model CID set successfully. TxHash: ${tx.hash}`);
+        console.log(`✅ Uploaded to IPFS. CID: ${newCID}`);
 
-        broadcastUpdate();
-
-        res.status(201).json({
-            success: true,
-            initialModelCID: newCID
-        });
+        res.status(201).json({ success: true, initialModelCID: newCID });
     } catch (error) {
-        console.error("Error setting initial model:", error.message);
-        res.status(500).json({ error: "Failed to set the initial model." });
+        console.error("Error uploading initial model:", error);
+        res.status(500).json({ error: "Failed to upload the initial model to IPFS." });
     }
 });
 
