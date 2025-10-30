@@ -243,7 +243,7 @@ wss.on('connection', (ws) => {
 
 
 // --- Automated Aggregation Logic ---
-async function handleAggregationState(round) {
+async function handleAggregationState(campaignId, round) {
     const roundId = `campaign_${campaignId}_round_${round.toString()}`;
     console.log(`Aggregation state detected for ${roundId}. Starting process.`);
     try {
@@ -444,6 +444,54 @@ app.post('/api/aggregated', async (req, res) => {
         console.error(`Error in aggregation-complete callback for ${roundId}:`, error.message);
         // Acknowledge the request even on failure to prevent the ML service from retrying.
         res.status(200).json({ error: "Internal server error during finalization." });
+    }
+});
+
+// --- NEW: Manual aggregation trigger endpoint ---
+app.post('/api/aggregate', async (req, res) => {
+    try {
+        const activeCampaignId = await flContract.activeCampaignId();
+        if (activeCampaignId === 0n) {
+            return res.status(400).json({ error: 'No active campaign to aggregate.' });
+        }
+
+        // Fetch current campaign state/round
+        let campaign = await flContract.campaigns(activeCampaignId);
+        const state = campaign.state; // enum: 0 INACTIVE, 1 SUBMISSION, 2 VALIDATION, 3 AGGREGATION
+        let txHash = undefined;
+
+        if (state === 0n) {
+            return res.status(400).json({ error: 'Campaign is inactive.' });
+        }
+
+        // If still in SUBMISSION, try to move to AGGREGATION first
+        if (state === 1n) {
+            try {
+                const tx = await flContract.attemptAggregation();
+                await tx.wait();
+                txHash = tx.hash;
+                console.log(`✅ attemptAggregation mined. TxHash: ${tx.hash}`);
+                await broadcastUpdate();
+            } catch (err) {
+                // Surface revert reason if present
+                console.error('attemptAggregation failed:', err?.message || err);
+                return res.status(400).json({ error: 'Aggregation conditions not met or on-chain call failed.' });
+            }
+            // Refresh campaign after state change
+            campaign = await flContract.campaigns(activeCampaignId);
+        }
+
+        // If now in AGGREGATION, kick off ML service aggregation proactively
+        if (campaign.state === 3n) {
+            await handleAggregationState(activeCampaignId, campaign.currentRound);
+            return res.status(200).json({ success: true, txHash, message: 'Aggregation started. Finalization will occur after ML callback.' });
+        }
+
+        // Any other state (e.g., VALIDATION) is not supported by this simplified flow
+        return res.status(409).json({ error: 'Campaign is not ready for aggregation.' });
+    } catch (error) {
+        console.error('Error handling /api/aggregate:', error?.message || error);
+        return res.status(500).json({ error: 'Internal server error while triggering aggregation.' });
     }
 });
 

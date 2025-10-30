@@ -92,6 +92,7 @@ const App: React.FC = () => {
     const [isCancelling, setIsCancelling] = useState<boolean>(false);
     const [isCreatingCampaign, setIsCreatingCampaign] = useState<boolean>(false);
     const [isUploading, setIsUploading] = useState<boolean>(false);
+    const [isAggregating, setIsAggregating] = useState<boolean>(false);
     const [error, setError] = useState<string>('');
     const [success, setSuccess] = useState<string>('');
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -216,6 +217,25 @@ const App: React.FC = () => {
         }
     };
 
+    const handleAggregate = async () => {
+        setIsAggregating(true);
+        setError('');
+        setSuccess('');
+        try {
+            const response = await axios.post<{ success: boolean; txHash?: string; message?: string }>(`${API_URL}/aggregate`);
+            const msg = response.data.message || 'Aggregation started.';
+            const txPart = response.data.txHash ? ` TxHash: ${response.data.txHash}` : '';
+            setSuccess(`${msg}${txPart}`);
+        } catch (err) {
+            const message = (axios.isAxiosError<ApiError>(err) && err.response?.data?.error)
+                ? err.response.data.error
+                : 'Failed to trigger aggregation.';
+            setError(message);
+        } finally {
+            setIsAggregating(false);
+        }
+    };
+
     console.log("Rendering App with status:", status.state);
 
     return (
@@ -280,6 +300,9 @@ const App: React.FC = () => {
                                 <Box sx={{ mt: 2, display: 'flex', gap: 2 }}>
                                     <Button variant="contained" onClick={handleCreateCampaign} disabled={isCreatingCampaign || status.state !== 'INACTIVE' || participants.length === 0}>
                                         {isCreatingCampaign ? <CircularProgress size={24} /> : 'Start Campaign'}
+                                    </Button>
+                                    <Button variant="contained" color="secondary" onClick={handleAggregate} disabled={isAggregating || !['SUBMISSION', 'AGGREGATION'].includes(status.state)}>
+                                        {isAggregating ? <CircularProgress size={24} /> : 'Aggregate'}
                                     </Button>
                                     <Button variant="outlined" color="warning" onClick={handleCancelCampaign} disabled={isCancelling || ['INACTIVE', 'Error'].includes(status.state)}>
                                         {isCancelling ? <CircularProgress size={24} /> : 'Cancel Active Campaign'}
